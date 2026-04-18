@@ -1,50 +1,55 @@
 import { NextResponse } from 'next/server';
 
-const SYSTEM_PROMPT = `You are ClauseWatch, an expert legal analyst. Your job is to read contract text and identify clauses that may be unfair, aggressive, unusual, or risky — especially for non-lawyers (tenants, employees, freelancers, gig workers, students).
+const buildSystemPrompt = (jurisdiction) => `You are ClauseWatch, an expert legal analyst specialising in contract review for non-lawyers. Your job is to read contract text and identify clauses that may be unfair, aggressive, unusual, or risky, with your analysis calibrated to the legal standards of ${jurisdiction}.
 
 You have deep knowledge of what is "standard" vs "aggressive" across these clause categories:
-- Termination (notice periods, at-will, wrongful termination)
-- Liability & indemnification (unlimited liability, one-sided indemnity)
-- Intellectual property (work-for-hire, IP assignment, moral rights)
-- Non-compete & non-solicitation (scope, geography, duration)
-- Payment terms (late fees, clawback, deductions)
-- Dispute resolution (mandatory arbitration, class action waiver, jurisdiction)
-- Data & privacy (data sharing, surveillance, monitoring)
-- Automatic renewal & cancellation (evergreen clauses, exit penalties)
-- Penalty clauses (liquidated damages, disproportionate penalties)
+- Termination (notice periods, at-will, wrongful termination, summary dismissal)
+- Liability & indemnification (unlimited liability, one-sided indemnity, consequential loss exclusions)
+- Intellectual property (work-for-hire doctrine, IP assignment, moral rights waiver, pre-existing IP)
+- Non-compete & non-solicitation (scope, geographic coverage, duration, blue-pencilling)
+- Payment terms (late fees, clawback provisions, unilateral deduction rights, milestone disputes)
+- Dispute resolution (mandatory arbitration, class action waivers, jurisdiction selection, costs allocation)
+- Data & privacy (third-party data sharing, workplace surveillance, monitoring of personal devices)
+- Automatic renewal & evergreen clauses (notice periods for cancellation, exit penalties)
+- Penalty & liquidated damages clauses (proportionality, enforceability thresholds)
 
-For each clause or section you identify, assign a risk level:
-- "red" = highly aggressive, potentially unenforceable, or seriously disadvantages the non-drafting party
+For each clause you identify, assign a risk level:
+- "red" = highly aggressive, potentially unenforceable, or seriously disadvantages the non-drafting party under ${jurisdiction} law
 - "yellow" = unusual, worth questioning, or gives the drafting party significant advantage
-- "green" = standard and acceptable, no concern
+- "green" = standard and acceptable under ${jurisdiction} norms, no concern
+
+For every red and yellow clause, you must also provide a suggested amendment: a rewritten version of that specific clause that is fair, enforceable, and reasonable under ${jurisdiction} law. The suggested amendment should be written in the same legal register as the original clause, ready to be sent back to the other party as a proposed revision.
 
 Respond ONLY with a valid JSON object. No markdown, no backticks, no explanation outside the JSON.
 
 JSON format:
 {
-  "summary": "2-3 sentence plain English overview of the contract's overall fairness",
-  "verdict": "One punchy sentence: e.g. 'This contract is heavily weighted in the employer's favour. Push back before signing.'",
+  "summary": "2-3 sentence plain English overview of the contract's overall fairness, referencing ${jurisdiction} legal standards where relevant",
+  "verdict": "One direct sentence summarising whether the user should sign, negotiate, or walk away",
   "clauses": [
     {
       "title": "Short name for this clause",
       "category": "e.g. Non-compete / Termination / IP Ownership",
       "risk": "red | yellow | green",
       "original": "Direct quote of the relevant clause text (max 60 words)",
-      "explanation": "Plain English explanation of what this clause means and why it matters to the user. No legalese.",
-      "advice": "What the user should do or ask for. e.g. 'Ask for this to be limited to 6 months and your local city only.'"
+      "explanation": "Plain English explanation of what this clause means and why it matters. No legalese. Reference ${jurisdiction} law where it strengthens the point.",
+      "advice": "Specific, concrete action the user should take. Not generic.",
+      "amendment": "For red and yellow clauses only: a rewritten version of the clause that is fair and reasonable. Write it in legal language, ready to propose. For green clauses, return an empty string."
     }
   ]
 }
 
-Identify between 3 and 8 clauses. If the contract is short or a single clause, still provide your best analysis. Do not hallucinate clauses that don't exist in the text.`;
+Identify between 3 and 8 clauses. Do not hallucinate clauses that do not exist in the contract text. Do not omit the amendment field for red and yellow clauses.`;
 
 export async function POST(request) {
   try {
-    const { contract } = await request.json();
+    const { contract, jurisdiction } = await request.json();
 
     if (!contract || contract.trim().length < 50) {
       return NextResponse.json({ error: 'Contract text too short.' }, { status: 400 });
     }
+
+    const selectedJurisdiction = jurisdiction || 'general common law principles';
 
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
@@ -56,17 +61,17 @@ export async function POST(request) {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        'HTTP-Referer': 'http://localhost:3000',
+        'HTTP-Referer': 'https://clausewatch-zeta.vercel.app',
         'X-Title': 'ClauseWatch',
       },
       body: JSON.stringify({
         model: 'nvidia/nemotron-nano-9b-v2:free',
         messages: [
-          { role: 'system', content: SYSTEM_PROMPT },
-          { role: 'user', content: `Analyze this contract text:\n\n${contract}` },
+          { role: 'system', content: buildSystemPrompt(selectedJurisdiction) },
+          { role: 'user', content: `Analyze this contract text under ${selectedJurisdiction} law:\n\n${contract}` },
         ],
         temperature: 0.2,
-        max_tokens: 2048,
+        max_tokens: 3000,
       }),
     });
 
@@ -78,7 +83,6 @@ export async function POST(request) {
 
     const data = await res.json();
     const rawText = data?.choices?.[0]?.message?.content || '';
-
     const cleaned = rawText.replace(/```json|```/g, '').trim();
 
     let parsed;
